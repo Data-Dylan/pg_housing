@@ -6,12 +6,13 @@ author: Data Dylan
 # Software packages.
 from arcgis.features import FeatureLayer
 import pandas as pd
+import requests
 
 # pandas options.
 pd.options.display.max_columns = 25
 
 
-def get_roll_nums() -> pd.core.frame.DataFrame:
+def get_roll_nums(jur = 226) -> pd.core.frame.DataFrame:
     """
     Function that retreives data from BC Assessment's Service Boundary Web 
     Map GIS data service. The main values of interest are in the ROLL_NUM
@@ -26,8 +27,8 @@ def get_roll_nums() -> pd.core.frame.DataFrame:
     -------
     df : pandas.core.frame.DataFrame
         The dataframe columns are as follows:
-            JUR: The juristdiction code. Currently, this is only for the 
-                Prince George area (code: 226).
+            JUR: The jurisdiction code. Currently, the default argument
+                    is Prince George's jurisdiction code (226).
             ROLL_NUM: The roll number for the property. This is basically a
                 UID for properties, but technically this is not totally true
                 because of some nuisance regarding very specific circumstances
@@ -63,7 +64,7 @@ def get_roll_nums() -> pd.core.frame.DataFrame:
     df = layer.query().df
     
     # Subset the data for Prince George properties.
-    df = df[df["AFP_OID"].str.startswith("226")]
+    df = df[df["AFP_OID"].str.startswith(f"{jur}")]
     
     # Drop unwanted columns.
     df.drop(columns = drop_cols, inplace = True)
@@ -73,7 +74,7 @@ def get_roll_nums() -> pd.core.frame.DataFrame:
     df["LAND_VALUE"] = df["LAND_VALUE"].astype("Int32")
     
     # Add Prince George JUR number.
-    df.insert(0, "JUR", 226)
+    df.insert(0, "JUR", jur)
     
     # Reset index to avoid confusion.
     df.reset_index(inplace = True, drop = True)
@@ -81,4 +82,46 @@ def get_roll_nums() -> pd.core.frame.DataFrame:
     # Return data.
     return df
 
+def get_web_uid(jur: str, roll: str) -> str:
+    """
+    Retrieves a UID that can be used to scrape data from BCA's online 
+    assessment search.
+
+    Parameters
+    ----------
+    jur : str
+        The jurisdiction code for the local government level. Used to for
+        tax legislation purposes.
+    roll : str
+        
+
+    Raises
+    ------
+    Raises an error if a 200 reponse code is not given in the request.
+
+    Returns
+    -------
+    str
+        The URL UID for BCA's online assessment search.
+    """
+    
+    # Hidden API base URL.
+    base_url = "https://www.bcassessment.ca/Property/Search/GetByRollNumber/"
+    
+    # Make request to the hidden API.
+    r = requests.get(f"{base_url}{jur}?roll={roll}")
+
+    # Retreive web address UID if successful. 
+    if r.status_code == 200:
+        uid = r.json().replace("ok-", "")
+        
+    # Raise error if there is a different statud code.
+    else: 
+        r.raise_for_status()
+        raise ValueError("Successful reponse. Unknown status code.")
+        
+    # Return the web address UID.
+    return uid
+
 test = get_roll_nums()
+        
