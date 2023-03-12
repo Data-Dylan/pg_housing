@@ -1,16 +1,43 @@
 """
 Functions for webscraping and API calls for Prince George property data.
 author: Data Dylan
+
+
+Need to try the same thing with selenium.
 """
 
 # Software packages.
 from arcgis.features import FeatureLayer
 import pandas as pd
+import numpy as np
 import requests
+from time import sleep
+import scrapy
+from collections import defaultdict
+import re
 
 # pandas options.
 pd.options.display.max_columns = 25
 
+def xpath_select(sel: scrapy.selector.unified.Selector, xpath: str) -> str:
+    """
+    Select values from XML/HTML using XPATH operators. 
+
+    Parameters
+    ----------
+    sel : scrapy.selector.unified.Selector
+        A scrapy selector object.
+    xpath : str
+        An XPATH expression.
+
+    Returns
+    -------
+    str
+        Returns the selected items from the XPATH expression.
+    """
+    x = sel.xpath(xpath)
+    x = x.extract()
+    return x
 
 def get_roll_nums(jur = 226) -> pd.core.frame.DataFrame:
     """
@@ -44,7 +71,8 @@ def get_roll_nums(jur = 226) -> pd.core.frame.DataFrame:
     """
 
     # URL for Service Boundary Web Map.
-    url = "https://arcgis.bcassessment.ca/ext_wa/rest/services/SBWM/SBWM/MapServer/2/"
+    url = "".join(["https://arcgis.bcassessment.ca/ext_wa/", 
+                   "rest/services/SBWM/SBWM/MapServer/2/"])
     
     # Columns to drop in the spatial dataframe.
     drop_cols = [
@@ -79,6 +107,9 @@ def get_roll_nums(jur = 226) -> pd.core.frame.DataFrame:
     # Reset index to avoid confusion.
     df.reset_index(inplace = True, drop = True)
     
+    # Print message to indicate that the request has finished.
+    print("The BCA juristdiction and roll numbers have been retreived.")
+    
     # Return data.
     return df
 
@@ -94,7 +125,6 @@ def get_web_uid(jur: str, roll: str) -> str:
         tax legislation purposes.
     roll : str
         
-
     Raises
     ------
     Raises an error if a 200 reponse code is not given in the request.
@@ -111,11 +141,11 @@ def get_web_uid(jur: str, roll: str) -> str:
     # Make request to the hidden API.
     r = requests.get(f"{base_url}{jur}?roll={roll}")
 
-    # Retreive web address UID if successful. 
+    # Retreive web address UID if request was successful. 
     if r.status_code == 200:
         uid = r.json().replace("ok-", "")
         
-    # Raise error if there is a different statud code.
+    # Raise error if there is a different status code.
     else: 
         r.raise_for_status()
         raise ValueError("Successful reponse. Unknown status code.")
@@ -123,5 +153,97 @@ def get_web_uid(jur: str, roll: str) -> str:
     # Return the web address UID.
     return uid
 
-test = get_roll_nums()
+def get_bca_data(jurs: np.ndarray,
+                 rolls: np.ndarray) -> pd.core.frame.DataFrame:
+    
+    # Empty list-dictionary to append values to. 
+    dict_data = defaultdict(list)
+    
+    # Amount of records to scrape.
+    n = len(jurs)
+    
+    # Create iteration data for the main loop.
+    prop_iter = zip(jurs, rolls)
+    
+    # Iterate through jurisdiction and roll numbers.
+    for i, (jur, roll) in enumerate(prop_iter):
+    
+        # Base URL for the printing-friendly display of the property's web page.
+        base_url = "https://www.bcassessment.ca/property/info/print/"
         
+        # IDs that do not always show up on the property web page.
+        dynamic_ids = [
+                            "lblTotalAssessedLand",
+                            "lblTotalAssessedBuilding",
+                            "lblPreviousAssessedLand",
+                            "lblPreviousAssessedBuilding",
+                            "property-comments",
+                            "lblComments"
+            ]
+        
+        # Get web address UID.
+        uid = get_web_uid(jur, roll)
+        
+        # Make request to get raw HTML data.
+        r = requests.get(f"{base_url}{uid}")
+        
+        # Retreive HTML if request was successful. 
+        if r.status_code == 200:
+            html = r.text
+        
+        # Raise error if there is a different status code.
+        else: 
+            r.raise_for_status()
+            raise ValueError("Successful reponse. Unknown status code.")
+            
+        # Create scrapy selector object.
+        sel = scrapy.Selector(text = html)
+        
+        # Get IDs for fields of interest with a single value.
+        ids_regex = "^lbl|^manufacture|^legal|^property-comments"
+        ids = xpath_select(sel, "//@id")
+        ids = list(filter(lambda x: bool(re.search(ids_regex, x)), ids))
+        
+        # Add the juristdiction and roll number to the dataframe.
+        dict_data["jur"] = jur
+        dict_data["roll"] = roll
+        
+        # Iterate through id values.
+        for id_name in ids:
+            
+            # Select id, using xpath.
+            value = xpath_select(sel, f"//*[@id='{id_name}']/text()")
+            
+            # If list is empty append NaN, otherwise append the value.
+            if not value:
+                dict_data[id_name].append(np.nan)
+                continue
+            else:
+                value = value[0].strip()
+                value = np.nan if value == "" else value
+                dict_data[id_name].append(value)
+                
+        # Iterate through dynamic ids and populate any missing values.
+        for id_name in dynamic_ids:
+            if id_name not in ids:
+                dict_data[id_name].append(np.nan)
+
+        # Print current iteration progress.
+        print(f"{i + 1} out of {n} records scraped.")
+        print(f"{round((i + 1) / n, 4) * 100}% complete.")
+        print()
+        
+        # Be respectful, pause the scraping function to give the server a break.
+        sleep(3)
+                
+    # Create dataframe from dictionary.
+    df = pd.DataFrame(dict_data)
+        
+    # Return the property data.
+    return df
+    
+    
+roll_df = get_roll_nums()
+jurs = roll_df["JUR"].values
+rolls = roll_df["ROLL_NUM"].values
+bca_df = get_bca_data(jurs, rolls)
